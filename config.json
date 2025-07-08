@@ -1,0 +1,15 @@
+{
+  "SourceDirectory": "",
+  "OutputDirectory": "",
+  "Bitrate": "256k",
+  "SupportedFormats": [
+    "*.flac",
+    "*.wav",
+    "*.m4a",
+    "*.aac",
+    "*.ogg",
+    "*.wma",
+    "*.ape",
+    "*.mp3"
+  ]
+}
