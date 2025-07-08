@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a C# audio file batch converter that addresses limitations of batch file implementations. The program converts various audio formats to MP3 using ffmpeg, with robust Unicode and special character support.
+TrackForge is a DJ-focused C# wrapper around ffmpeg for batch audio file conversion. The program addresses limitations of batch file implementations, converting various audio formats to MP3 with robust Unicode and special character support, optimized for DJ track management workflows.
 
 ## Development Commands
 
@@ -66,7 +66,7 @@ The converter processes files by:
 4. Sanitizing filenames for filesystem compatibility
 5. Maintaining directory structure in output
 6. Skipping existing output files
-7. Converting to MP3 with metadata preservation
+7. Converting to MP3 with metadata and thumbnail preservation
 8. Logging all operations and errors
 
 ### Configuration Schema
@@ -88,6 +88,7 @@ The converter processes files by:
 - Extracts metadata using ffprobe to determine optimal output filenames
 - Sanitizes filenames to ensure filesystem compatibility
 - Preserves directory structure during conversion
+- Preserves album artwork and thumbnails in output files
 - Handles Unicode file names correctly
 - Comprehensive logging with timestamps and error details
 - Async/await pattern for file I/O operations

@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using Newtonsoft.Json;
 
-namespace AudioConverter
+namespace TrackForge
 {
     class Program
     {
@@ -21,7 +21,7 @@ namespace AudioConverter
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
             Console.WriteLine("========================================");
-            Console.WriteLine("音声ファイル一括変換プログラム (C#版)");
+            Console.WriteLine("TrackForge - DJ向け音声ファイル変換ツール");
             Console.WriteLine("========================================");
 
             // 設定ファイルの読み込み
