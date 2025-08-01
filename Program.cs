@@ -5,6 +5,9 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using Newtonsoft.Json;
+using MetaBrainz.MusicBrainz;
+using MetaBrainz.MusicBrainz.Interfaces.Searches;
+using MetaBrainz.MusicBrainz.Interfaces.Entities;
 
 namespace TrackForge
 {
@@ -16,6 +19,8 @@ namespace TrackForge
         private static int skippedFiles = 0;
         private static List<string> errorFiles = new List<string>();
         private static string logFile = "";
+        private static Query? musicBrainzQuery;
+        private static DateTime lastMusicBrainzRequest = DateTime.MinValue;
 
         static async Task Main(string[] args)
         {
@@ -65,6 +70,13 @@ namespace TrackForge
             logFile = Path.Combine(config.OutputDirectory, "conversion.log");
             await InitializeLog();
 
+            // MusicBrainz APIの初期化
+            if (config.MusicBrainz.Enabled)
+            {
+                musicBrainzQuery = new Query("TrackForge", "1.0", "https://github.com/yourrepo/trackforge");
+                Console.WriteLine("MusicBrainz メタデータ検索が有効です");
+            }
+
             Console.WriteLine();
             Console.WriteLine("設定確認:");
             Console.WriteLine("ソースディレクトリ:");
@@ -100,7 +112,8 @@ namespace TrackForge
                     SourceDirectories = new[] { @"C:\Music\Source1", @"D:\Audio\Collection" },
                     OutputDirectory = @"C:\Users\YourName\Desktop\output",
                     Bitrate = "256k",
-                    SupportedFormats = new[] { "*.flac", "*.wav", "*.m4a", "*.aac", "*.ogg", "*.wma", "*.ape", "*.mp3" }
+                    SupportedFormats = new[] { "*.flac", "*.wav", "*.m4a", "*.aac", "*.ogg", "*.wma", "*.ape", "*.mp3" },
+                    MusicBrainz = new MusicBrainzConfig()
                 };
 
                 string json = JsonConvert.SerializeObject(defaultConfig, Formatting.Indented);
@@ -195,16 +208,30 @@ namespace TrackForge
                 // 相対パスを計算
                 string relativePath = Path.GetRelativePath(sourceDirectory, inputFile);
                 
-                // メタデータから楽曲名を取得
-                string? trackTitle = await GetTrackTitle(inputFile);
+                // メタデータから楽曲情報を取得
+                var metadata = await GetTrackMetadata(inputFile);
+                string? trackTitle = metadata.Title;
                 
                 // 出力ファイル名を決定
                 string outputFileName;
                 if (!string.IsNullOrWhiteSpace(trackTitle))
                 {
                     // メタデータの楽曲名を使用（不正な文字を置換）
-                    outputFileName = SanitizeFileName(trackTitle) + ".mp3";
-                    Console.WriteLine($"  メタデータから楽曲名を取得: {trackTitle}");
+                    string fileName = trackTitle;
+                    if (!string.IsNullOrWhiteSpace(metadata.Artist))
+                    {
+                        fileName = $"{metadata.Artist} - {trackTitle}";
+                    }
+                    outputFileName = SanitizeFileName(fileName) + ".mp3";
+                    
+                    if (metadata.IsFromMusicBrainz)
+                    {
+                        Console.WriteLine($"  MusicBrainzから楽曲情報を取得: {fileName}");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"  メタデータから楽曲名を取得: {fileName}");
+                    }
                 }
                 else
                 {
@@ -213,7 +240,7 @@ namespace TrackForge
                 }
                 
                 // 出力ファイルパス
-                string outputDir = Path.Combine(config.OutputDirectory, Path.GetDirectoryName(relativePath) ?? "");
+                string outputDir = Path.Combine(config!.OutputDirectory, Path.GetDirectoryName(relativePath) ?? "");
                 string outputFile = Path.Combine(outputDir, outputFileName);
                 
                 // 出力ディレクトリを作成
@@ -255,15 +282,50 @@ namespace TrackForge
             }
         }
 
-        private static async Task<string?> GetTrackTitle(string inputFile)
+        private static async Task<TrackMetadata> GetTrackMetadata(string inputFile)
         {
+            var metadata = new TrackMetadata();
+            
+            try
+            {
+                // ffprobeから基本メタデータを取得
+                var ffprobeData = await GetFFProbeMetadata(inputFile);
+                metadata.Title = ffprobeData.Title;
+                metadata.Artist = ffprobeData.Artist;
+                metadata.Album = ffprobeData.Album;
+
+                // MusicBrainzから拡張メタデータを検索
+                if (config!.MusicBrainz.Enabled && config.MusicBrainz.UseEnhancedMetadata && musicBrainzQuery != null)
+                {
+                    var enhancedMetadata = await SearchMusicBrainz(ffprobeData.Artist, ffprobeData.Title);
+                    if (enhancedMetadata != null)
+                    {
+                        metadata.Title = enhancedMetadata.Title ?? metadata.Title;
+                        metadata.Artist = enhancedMetadata.Artist ?? metadata.Artist;
+                        metadata.Album = enhancedMetadata.Album ?? metadata.Album;
+                        metadata.IsFromMusicBrainz = true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                await File.AppendAllTextAsync(logFile, $"メタデータ取得エラー: {inputFile} - {ex.Message}{Environment.NewLine}");
+            }
+            
+            return metadata;
+        }
+
+        private static async Task<FFProbeMetadata> GetFFProbeMetadata(string inputFile)
+        {
+            var metadata = new FFProbeMetadata();
+            
             try
             {
                 using var process = new Process();
                 process.StartInfo = new ProcessStartInfo
                 {
                     FileName = "ffprobe",
-                    Arguments = $"-v quiet -show_entries format_tags=title -of default=noprint_wrappers=1:nokey=1 \"{inputFile}\"",
+                    Arguments = $"-v quiet -show_entries format_tags=title,artist,album -of default=noprint_wrappers=1:nokey=1 \"{inputFile}\"",
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
@@ -276,13 +338,66 @@ namespace TrackForge
 
                 if (process.ExitCode == 0 && !string.IsNullOrWhiteSpace(output))
                 {
-                    return output.Trim();
+                    var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    if (lines.Length > 0) metadata.Title = lines[0].Trim();
+                    if (lines.Length > 1) metadata.Artist = lines[1].Trim();
+                    if (lines.Length > 2) metadata.Album = lines[2].Trim();
                 }
             }
             catch (Exception ex)
             {
-                await File.AppendAllTextAsync(logFile, $"メタデータ取得エラー: {inputFile} - {ex.Message}{Environment.NewLine}");
+                await File.AppendAllTextAsync(logFile, $"ffprobe メタデータ取得エラー: {inputFile} - {ex.Message}{Environment.NewLine}");
             }
+            
+            return metadata;
+        }
+
+        private static async Task<MusicBrainzMetadata?> SearchMusicBrainz(string? artist, string? title)
+        {
+            if (musicBrainzQuery == null || string.IsNullOrWhiteSpace(artist) || string.IsNullOrWhiteSpace(title))
+                return null;
+
+            try
+            {
+                // レート制限の実装（1秒に1リクエスト）
+                var timeSinceLastRequest = DateTime.Now - lastMusicBrainzRequest;
+                if (timeSinceLastRequest.TotalMilliseconds < config!.MusicBrainz.RequestDelayMs)
+                {
+                    var delayMs = config.MusicBrainz.RequestDelayMs - (int)timeSinceLastRequest.TotalMilliseconds;
+                    await Task.Delay(delayMs);
+                }
+
+                // MusicBrainzで楽曲検索
+                var searchQuery = $"artist:{artist} recording:{title}";
+                var results = await musicBrainzQuery.FindRecordingsAsync(searchQuery, limit: 5);
+                
+                lastMusicBrainzRequest = DateTime.Now;
+
+                var bestMatch = results.Results?.FirstOrDefault(r => 
+                    r.Item != null && 
+                    r.Score >= 90 &&
+                    !string.IsNullOrWhiteSpace(r.Item.Title) &&
+                    r.Item.ArtistCredit?.Any() == true);
+
+                if (bestMatch?.Item != null)
+                {
+                    var recording = bestMatch.Item;
+                    var artistName = recording.ArtistCredit?.FirstOrDefault()?.Artist?.Name;
+                    var albumName = recording.Releases?.FirstOrDefault()?.Title;
+
+                    return new MusicBrainzMetadata
+                    {
+                        Title = recording.Title,
+                        Artist = artistName,
+                        Album = albumName
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                await File.AppendAllTextAsync(logFile, $"MusicBrainz 検索エラー: {artist} - {title} - {ex.Message}{Environment.NewLine}");
+            }
+
             return null;
         }
 
@@ -377,5 +492,36 @@ namespace TrackForge
         public string OutputDirectory { get; set; } = "";
         public string Bitrate { get; set; } = "256k";
         public string[] SupportedFormats { get; set; } = Array.Empty<string>();
+        public MusicBrainzConfig MusicBrainz { get; set; } = new MusicBrainzConfig();
+    }
+
+    public class MusicBrainzConfig
+    {
+        public bool Enabled { get; set; } = true;
+        public bool UseEnhancedMetadata { get; set; } = true;
+        public string UserAgent { get; set; } = "TrackForge/1.0 (https://github.com/yourrepo/trackforge)";
+        public int RequestDelayMs { get; set; } = 1000;
+    }
+
+    public class TrackMetadata
+    {
+        public string? Title { get; set; }
+        public string? Artist { get; set; }
+        public string? Album { get; set; }
+        public bool IsFromMusicBrainz { get; set; } = false;
+    }
+
+    public class FFProbeMetadata
+    {
+        public string? Title { get; set; }
+        public string? Artist { get; set; }
+        public string? Album { get; set; }
+    }
+
+    public class MusicBrainzMetadata
+    {
+        public string? Title { get; set; }
+        public string? Artist { get; set; }
+        public string? Album { get; set; }
     }
 }
